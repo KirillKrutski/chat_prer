@@ -114,68 +114,78 @@ public class ChatServer {
 
         private void handleClientMessage(String message) {
             String[] tokens = message.split(" ", 4);
-            if (tokens[0].equals("MESSAGE")) {
-                broadcastMessage(tokens[1], tokens[2]);
-                saveMessage(tokens[1], tokens[2]);
-            } else if (tokens[0].equals("DELETE")) {
-                updateMessage(tokens[1], Integer.parseInt(tokens[2]), "[deleted]");
-            } else if (tokens[0].equals("EDIT")) {
-                updateMessage(tokens[1], Integer.parseInt(tokens[2]), tokens[3]);
+            try {
+                if (tokens[0].equals("MESSAGE")) {
+                    saveMessage(tokens[1], tokens[2]);
+                } else if (tokens[0].equals("DELETE")) {
+                    updateMessage(tokens[1], Integer.parseInt(tokens[2]), "[deleted]");
+                } else if (tokens[0].equals("EDIT")) {
+                    if (tokens.length < 4) {
+                        out.println("Error: Invalid command format. Usage: EDIT <username> <message_id> <new_message>");
+                        return;
+                    }
+                    updateMessage(tokens[1], Integer.parseInt(tokens[2]), tokens[3]);
+                }
+            } catch (NumberFormatException e) {
+                out.println("Error: Message ID must be a valid number.");
             }
         }
 
+
         private void broadcastMessage(String username, String message) {
-            int messageId = -1;
-            try (PreparedStatement stmt = connection.prepareStatement("SELECT id FROM messages WHERE username = ? AND message = ? ORDER BY id DESC LIMIT 1")) {
-                stmt.setString(1, username);
-                stmt.setString(2, message);
-                ResultSet rs = stmt.executeQuery();
-                if (rs.next()) {
-                    messageId = rs.getInt("id");
-                }
-            } catch (SQLException e) {
-                e.printStackTrace();
-            }
-            String formattedMessage = (messageId != -1) ? "[ID: " + messageId + "] " + message : message;
-            for (PrintWriter client : clients.values()) {
-                client.println(username + ": " + formattedMessage);
-            }
             for (PrintWriter client : clients.values()) {
                 client.println(username + ": " + message);
             }
         }
 
         private void saveMessage(String username, String message) {
-            try (PreparedStatement stmt = connection.prepareStatement("INSERT INTO messages (username, message) VALUES (?, ?)")) {
+            try (PreparedStatement stmt = connection.prepareStatement("INSERT INTO messages (username, message) VALUES (?, ?)", Statement.RETURN_GENERATED_KEYS)) {
                 stmt.setString(1, username);
                 stmt.setString(2, message);
                 stmt.executeUpdate();
+
+                ResultSet rs = stmt.getGeneratedKeys();
+                if (rs.next()) {
+                    int messageId = rs.getInt(1);
+                    broadcastMessage(username, "[ID: " + messageId + "] " + message);
+                }
             } catch (SQLException e) {
                 e.printStackTrace();
             }
         }
 
         private void updateMessage(String username, int id, String newMessage) {
-            try (PreparedStatement checkStmt = connection.prepareStatement("SELECT id FROM messages WHERE id = ?")) {
+            try (PreparedStatement checkStmt = connection.prepareStatement("SELECT username FROM messages WHERE id = ?")) {
                 checkStmt.setInt(1, id);
                 ResultSet rs = checkStmt.executeQuery();
+
                 if (!rs.next()) {
                     out.println("Error: Message ID not found. Please enter a valid ID.");
+                    return;
+                }
+
+                String owner = rs.getString("username");
+                if (!owner.equals(username)) {
+                    out.println("Error: You can only edit your own messages.");
                     return;
                 }
             } catch (SQLException e) {
                 e.printStackTrace();
                 return;
             }
-            try (PreparedStatement stmt = connection.prepareStatement("UPDATE messages SET message = ? WHERE id = ? AND username = ?")) {
+
+            try (PreparedStatement stmt = connection.prepareStatement("UPDATE messages SET message = ? WHERE id = ?")) {
                 stmt.setString(1, newMessage);
                 stmt.setInt(2, id);
-                stmt.setString(3, username);
                 stmt.executeUpdate();
-                broadcastMessage(username, "Message updated: " + newMessage);
+
+                broadcastMessage(username, newMessage.equals("[deleted]")
+                        ? "Message ID [" + id + "] has been deleted."
+                        : "Message ID [" + id + "] has been updated to: " + newMessage);
             } catch (SQLException e) {
                 e.printStackTrace();
             }
         }
+
     }
 }
